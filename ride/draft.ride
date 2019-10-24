@@ -1,0 +1,6 @@
+{-# STDLIB_VERSION 3 #-}
+{-# CONTENT_TYPE DAPP #-}
+{-# SCRIPT_TYPE ACCOUNT #-}
+
+
+func profitOfKey(s: String) = 1 :: 1 :: 1 :: [1,1,1]

@@ -1,0 +1,404 @@
+{-# STDLIB_VERSION 3 #-}
+{-# CONTENT_TYPE DAPP #-}
+{-# SCRIPT_TYPE ACCOUNT #-}
+
+#dapp consts
+let depositToken = unit # e.g. waves
+let oracleDataKey = "waves_btc_8"
+let ten8 = 100*1000*1000
+
+# state keys
+let lendersKey = "lenders"
+let enabledLendersKey = "enabledLenders"
+let gracePeriodKey = "gracePeriod"
+let interestPeriodKey = "interestPeriod"
+let burndownPeriodKey = "burndownPeriod"
+let oracleKey = "oracle"
+let discountPercentileKey = "discountPercentile"
+let maxRateKey = "maxRate"
+let assetTokenKey = "assetToken"
+let adminKey = "owner"
+let serviceFeePercentileKey ="service_fee"
+let lendSizeKey ="lend_size"
+
+let enableDepositBtcKey = "enable_deposit_btc"
+let enableNewLoansKey = "enable_new_loans"
+
+func startOfKey(renter: String) = "start_of_" + renter
+func endOfGraceOfKey(renter: String) = "end_of_grace_of_" + renter
+func endOfInterestOfKey(renter: String) = "end_of_interest_of_" + renter
+func endOfBurndownOfKey(renter: String) = "end_of_burndown_of_" + renter
+func rateOfKey(renter: String) = "rate_of_" + renter
+func depositOfKey(renter: String) = "deposit_of_" + renter
+func lendOfKey(renter: String) = "lend_of_" + renter
+func lendersOfKey(renter: String) = "lenders_of_" + renter
+func circulatingAssetsKey(lender: String) = "curculating_assets_of_" + lender
+func openLendsOfKey(lender: String) = "open_lends_of_" + lender
+
+# state accessors
+let lendSize = this.getInteger(lendSizeKey).valueOrErrorMessage("no lendSize") * ten8
+
+let newDepositBtcEnabled = match this.getBoolean(enableDepositBtcKey) {
+    case b:Boolean => b
+    case _ => true
+}
+
+let newLoansEnabled = match this.getBoolean(enableNewLoansKey) {
+    case b:Boolean => b
+    case _ => true
+}
+
+
+
+let allLendersStr = match this.getString(lendersKey) {
+    case x:String => x
+    case _ => ""
+}
+let enabledLendersStr = match this.getString(enabledLendersKey) {
+    case x:String => x
+    case _ => ""
+}
+let ownerStr = getString(this, adminKey).valueOrErrorMessage("No owner")
+let owner = addressFromString(ownerStr).valueOrErrorMessage("No owner")
+let assetToken = getString(this, assetTokenKey).valueOrErrorMessage("No assetId").fromBase58String()          # e.g. BTC
+let gracePeriod = getInteger(this, gracePeriodKey).valueOrErrorMessage("No grace period")                     # gracePeriod in blocks
+let interestPeriod = getInteger(this, interestPeriodKey).valueOrErrorMessage("No interest period")            # interestPeriod in blocks
+let burndownPeriod = getInteger(this, burndownPeriodKey).valueOrErrorMessage("No burndown period")            # burndownPeriod in blocks
+let maxRate = getInteger(this, maxRateKey).valueOrErrorMessage("No oracle max value")                         # max rate(waveslets per satoshi)
+let oracle = getString(this, oracleKey).valueOrErrorMessage("No oracle")                                      # max rate(waveslets per satoshi)
+let oracleValue = getInteger(addressFromString(oracle).valueOrErrorMessage("bad oracle address"), oracleDataKey).valueOrErrorMessage("No oracle value")  # oracle value
+let discountPercentile = getInteger(this, discountPercentileKey).valueOrErrorMessage("No discount percentile")
+let serviceFeePercentile = getInteger(this, serviceFeePercentileKey).valueOrErrorMessage("No service fee percentile")
+let rate = 
+    if(oracleValue <= maxRate)
+                then oracleValue
+                else throw("Suspicious rate value: actual: " +
+                        oracleValue.toString() + ", max: " +
+                        maxRate.toString())          # amount of base(wavelets) for 1 satoshi
+
+let minimalLendAmount = (100 * ten8) / (discountPercentile * rate) + if (100 * ten8) % (discountPercentile * rate) > 0 then 1 else 0
+
+let initialized = getString(this, assetTokenKey).isDefined()
+
+# a helper function calculating if a user has an open loan
+func isLendOpen(renter: String) = match getInteger(this, startOfKey(renter)) {
+    case s: Int => s > 0
+    case _ => false
+}
+
+func profitForKey(s: String) = "profit_for_" + s
+func profitFor(r: String) = match getInteger(this, profitForKey(r)) {
+    case i: Int => i
+    case _ => 0
+}
+
+func unclaimedDepositForKey(s: String) = "unclaimied_for_" + s
+func unclaimedDepositFor(r: String) = match getInteger(this, unclaimedDepositForKey(r)) {
+    case i: Int => i
+    case _ => 0
+}
+
+func decrementOpenLendsAmount(lender: String) = {
+    let cur = this.getInteger(openLendsOfKey(lender)).valueOrErrorMessage("must have open lends at the moment")
+    DataEntry(openLendsOfKey(lender), cur - 1)
+}
+
+func incrementOpenLends() = {
+    func foldFunc(acc: List[DataEntry], s: String) = {
+        let cur = match this.getInteger(openLendsOfKey(s)) {
+            case x:Int => x
+            case _ => 0
+        }
+        DataEntry(openLendsOfKey(s), cur + 1) :: acc
+    }
+    FOLD<20>(enabledLendersStr.split("|"), [], foldFunc)
+}
+
+func profitDistribution(btc: Int, lenders: List[String]) = {
+    let servicePart = fraction(btc, serviceFeePercentile, 10000)
+    let distribute = btc - servicePart
+    let newServiceProfit = profitFor(ownerStr) + servicePart
+    let lendersAmt = lenders.size()
+    func foldFunc(l:List[DataEntry], lender: String) = {
+        let newProfit = profitFor(lender) + distribute/lendersAmt
+        DataEntry(profitForKey(lender), newProfit) ::
+        decrementOpenLendsAmount(lender) ::
+        l
+    }
+    FOLD<20>(lenders, [DataEntry(profitForKey(ownerStr), newServiceProfit)], foldFunc)
+}
+
+func unclaimedDistribution(waves: Int, btc:Int, lenders: List[String]) = {
+    let wavesServicePart = fraction(waves, serviceFeePercentile, 10000)
+    let wavesDistribute = waves - wavesServicePart
+    let newWavesServiceUnclaimed = unclaimedDepositFor(ownerStr) + wavesServicePart
+    let lendersAmt = lenders.size()
+    func foldFunc(l:List[DataEntry], lender: String) = {
+        let newUnclaimed = unclaimedDepositFor(lender) + wavesDistribute/lendersAmt
+        let newDepositValue = this.getIntegerValue(circulatingAssetsKey(lender)) - btc/lendersAmt
+        DataEntry(unclaimedDepositForKey(lender), newUnclaimed) ::
+        DataEntry(circulatingAssetsKey(lender), newDepositValue) ::
+        decrementOpenLendsAmount(lender) ::
+        l
+    }
+    FOLD<20>(lenders, [DataEntry(unclaimedDepositForKey(ownerStr), newWavesServiceUnclaimed)], foldFunc)
+}
+
+# a helper function calculating that returns a WriteSet, resetting dapp state for the user
+func closing(renter: String, waves: Int, btc: Int, isProfit: Boolean, lenders: List[String]) = WriteSet(
+                        DataEntry(startOfKey(renter), 0) ::
+                        DataEntry(endOfGraceOfKey(renter), 0) ::
+                        DataEntry(endOfInterestOfKey(renter), 0) ::
+                        DataEntry(endOfBurndownOfKey(renter), 0) ::
+                        DataEntry(rateOfKey(renter), 0) ::
+                        DataEntry(depositOfKey(renter), 0) ::
+                        DataEntry(lendOfKey(renter), 0) ::
+                        DataEntry(lendersOfKey(renter), "") ::
+                        if(isProfit) 
+                            then profitDistribution(btc, lenders)
+                            else unclaimedDistribution(waves, btc, lenders)
+
+                    )
+
+func closeExpired(address: String, waves: Int, btc:Int, lenders: List[String]) = {
+    let loanSize = getInteger(this, depositOfKey(address)).valueOrErrorMessage("No loan size for address")
+    closing(address, waves, btc, false, lenders)
+}
+
+func doBB(renter:Address, returnAssetId: ByteVector, returnAmt: Int) = {
+    let renterStr = renter.toString()
+    let hasOpenLoan = isLendOpen(renterStr)
+    let isTokenCorrect = returnAssetId == assetToken
+    let loanAmount = this.getIntegerValue(lendOfKey(renterStr))
+    let depositedValue = this.getIntegerValue(depositOfKey(renterStr))
+    # there must be an open loan, the return amount of WBTC must be correct
+    if(!hasOpenLoan) then throw("No open loan for caller") else
+    if(!isTokenCorrect) then throw("User must return WBTC: " + assetToken.toBase58String() + " but returning: " + returnAssetId.toBase58String()) else
+        let endOfGrace = this.getIntegerValue(endOfGraceOfKey(renterStr))
+        let endOfBurndown = this.getIntegerValue(endOfBurndownOfKey(renterStr))
+        let endOfInterest =  this.getIntegerValue(endOfInterestOfKey(renterStr))
+        let canReturnFullAmount = height <= endOfGrace
+        let returnsTheSameAmount = height <= endOfGrace
+        if (height >= endOfInterest) then throw("your loan has expired") else 
+            let lendersProfit = if(height > endOfGrace)
+                then fraction(loanAmount, height - endOfGrace, endOfBurndown - endOfGrace)
+                else 0
+            let requiredAmount = if(returnsTheSameAmount)
+                then loanAmount
+                else loanAmount + lendersProfit 
+            let isReturnAmountCorrect = returnAmt >= requiredAmount
+            let isReturnAmountExact = returnAmt == requiredAmount
+            if(!isReturnAmountCorrect) 
+                then throw("User must return " + loanAmount.toString() + " satoshis, but returning " + returnAmt.toString())
+                else 
+                    let depositBack = ScriptTransfer(renter, depositedValue, depositToken)
+                    let excessReturnAmount = ScriptTransfer(renter, returnAmt - requiredAmount, assetToken)
+                    let transfers = if(isReturnAmountExact) then [depositBack] else [depositBack, excessReturnAmount]
+                    let lenders = this.getString(lendersOfKey(renterStr))
+                        .valueOrErrorMessage("No lenders for an open loan")
+                        .split("|")
+                    ScriptResult(closing(renterStr, 0, lendersProfit, true, lenders), TransferSet(transfers))
+}
+
+func add(lenders:String, lender: String) = if (lenders == "") then lender else (lenders + "|" + lender)
+
+func remove(lenders:String, lender: String) = {
+    let arr = lenders.split("|")
+    func foldFunc(acc:String, item: String) = 
+        if item == lender
+            then acc 
+            else add(acc,item)
+    FOLD<20>(arr, "", foldFunc)
+} 
+
+func doTakeProfit(lender: Address) = {
+    let str = lender.bytes.toBase58String()
+    ScriptResult(
+        WriteSet([
+            DataEntry(profitForKey(str), 0),
+            DataEntry(unclaimedDepositForKey(str), 0)
+        ]),
+        TransferSet([
+            ScriptTransfer(lender, profitFor(str), assetToken),
+            ScriptTransfer(lender, unclaimedDepositFor(str), depositToken)
+            ])) 
+}
+
+# initializer function, allowing dapp to define owner, token and rate
+# required to be invoked exactly once before the dapp can function 
+@Callable(i)
+func init(owner: String, token: String, oracle: String, maxRate: Int, discount: Int, grace: Int,
+    interest: Int, burndown: Int, serviceFee: Int, lendSize: Int) = 
+    if( interest > burndown) then throw("interest must be less or equal to burndown") else
+    if(i.caller != this) then  throw("only dapp itself can init") else 
+        WriteSet([
+            DataEntry(adminKey, owner),
+            DataEntry(assetTokenKey, token),
+            DataEntry(oracleKey, oracle),
+            DataEntry(maxRateKey, maxRate),
+            DataEntry(discountPercentileKey, discount),
+            DataEntry(gracePeriodKey, grace),
+            DataEntry(interestPeriodKey, interest),
+            DataEntry(burndownPeriodKey, burndown),
+            DataEntry(serviceFeePercentileKey, serviceFee),
+            DataEntry(lendSizeKey, lendSize)
+        ]) 
+
+# initializer function, allowing owner change the rate
+@Callable(i)
+func updateParams(oracle: String, maxRate: Int, discount: Int, grace: Int, interest: Int,
+    burndown: Int, serviceFee: Int, lendSize: Int) =
+    if( interest > burndown) then throw("interest must be less or equal to burndown") else
+    if(i.caller != owner) then  throw("only owner can update params") else 
+    WriteSet([                
+                DataEntry(oracleKey, oracle),
+                DataEntry(maxRateKey, maxRate),
+                DataEntry(discountPercentileKey, discount),
+                DataEntry(gracePeriodKey, grace),
+                DataEntry(interestPeriodKey, interest),
+                DataEntry(burndownPeriodKey, burndown),
+                DataEntry(serviceFeePercentileKey, serviceFee),
+                DataEntry(lendSizeKey, lendSize)
+                ])
+
+# a function to borrow WAVES for BTC.
+# requires attached WAVES, transfers BTC back to user, based on current rate
+@Callable(i)
+func borrow() = { 
+    let renter = i.caller.bytes.toBase58String()
+    if(!newLoansEnabled) then throw("New loans temporarily disabled") else
+    if(isLendOpen(renter)) then throw(renter + " already has an open loan") else
+        match i.payment {
+            case a:AttachedPayment => 
+                # the attached payment must be in WAVES
+                if (a.assetId == depositToken) then {
+                    let currentHeight = height
+                    let endOfGrace = height + gracePeriod
+                    let endOfInterest = endOfGrace + interestPeriod
+                    let endOfBurndown = endOfGrace + burndownPeriod
+                    let depositAmount = a.amount
+                    let assetTokensLent = fraction(depositAmount, rate * discountPercentile, ten8 * 100)
+
+                    if (assetTokensLent > 0) then {
+                        # the data of the loan
+                        let datas = WriteSet(
+                            DataEntry(startOfKey(renter), currentHeight) ::
+                            DataEntry(endOfGraceOfKey(renter), endOfGrace) ::
+                            DataEntry(endOfInterestOfKey(renter), endOfInterest) ::
+                            DataEntry(endOfBurndownOfKey(renter), endOfBurndown) ::
+                            DataEntry(rateOfKey(renter), fraction(rate, discountPercentile, 100)) ::
+                            DataEntry(depositOfKey(renter), depositAmount) ::
+                            DataEntry(lendOfKey(renter), assetTokensLent) ::
+                            DataEntry(lendersOfKey(renter), enabledLendersStr) ::
+                            incrementOpenLends()
+                        )
+                        ScriptResult(datas, 
+                            # the transfer of BTC
+                            TransferSet([ScriptTransfer(i.caller, assetTokensLent, assetToken)]))
+                    } else throw("payment can't be less than " + minimalLendAmount.toString() + " wavelets (price of 1 satoshi)")
+                } else throw("can only lend WBTC for WAVES, but got " + a.assetId.valueOrErrorMessage("No asset provided").toBase58String())
+            case _ => throw("payment in assetTokens must be attached")
+        }
+}
+
+@Callable(i)
+func buyBack() = {
+    let pmt = i.payment.valueOrErrorMessage("payment must be attached")
+    doBB(i.caller, pmt.assetId.valueOrErrorMessage("payment in WBTC must be attached"), pmt.amount)
+}
+# if there's an unclaimed loan, dapp owner can transfer unclaimed WBTC to himself after the expiration
+@Callable(i)
+func closeExpiredFor(address:String) = {
+    let endOfInterest = getInteger(this, endOfInterestOfKey(address)).valueOrErrorMessage("no end of interest")
+    let loanExpired =  height > endOfInterest
+    if(!loanExpired) then throw("Owner can only close expired rents. Expiring on height " + endOfInterest.toString() + ", current height" + height.toString()) else
+    closeExpired(
+        address,
+        this.getIntegerValue(depositOfKey(address)),
+        this.getIntegerValue(lendOfKey(address)),
+        this.getStringValue(lendersOfKey(address)).split("|"))
+}
+
+@Callable(i)
+func discard() = {
+   let address = i.caller.bytes.toBase58String()
+   closeExpired(address,       
+        this.getIntegerValue(depositOfKey(address)),
+        this.getIntegerValue(lendOfKey(address)),
+        this.getStringValue(lendersOfKey(address)).split("|"))
+}
+
+# lenders can withdraw profits
+@Callable(i)
+func sendProfit(lender: String) = 
+    doTakeProfit(addressFromString(lender).valueOrErrorMessage("incorrect address"))
+
+@Callable(i)
+func takeProfit() = doTakeProfit(i.caller)
+
+@Callable(i)
+func enableLending(b: Boolean) = {
+    let lender = i.caller.bytes.toBase58String()
+    let isLender = allLendersStr.indexOf(lender).isDefined()
+    let isActiveLender = enabledLendersStr.indexOf(lender).isDefined()
+    if(!isLender) then throw("is not lender") else
+    let r =
+        if(isActiveLender) then
+            if(b) then throw("is already active lender") else remove(enabledLendersStr, lender)
+        else
+            if(!b) then throw("is already disabled lender") else add(enabledLendersStr, lender)
+    WriteSet([DataEntry(enabledLendersKey, r)])
+}
+
+@Callable(i)
+func depositBtc() = {
+    let lender = i.caller.bytes.toBase58String()
+    let hasCapacity = allLendersStr.split("|").size() < 20
+    let alreadyParticipates = allLendersStr.indexOf(lender).isDefined()
+    if(!newDepositBtcEnabled) then throw("New deposits temporarily disabled") else
+    if (!hasCapacity) then throw("too much lenders already") else
+    if(alreadyParticipates) then throw("lender " + lender + " already participates in the dApp") else
+        let errorMessage = "exactly" + this.getInteger(lendSizeKey).value().toString() + " BTC must be attached"
+        let pmt = i.payment.valueOrErrorMessage(errorMessage)
+        if(pmt.assetId != assetToken || pmt.amount != lendSize) then throw(errorMessage) else {
+            WriteSet([
+                DataEntry(circulatingAssetsKey(lender), lendSize),
+                DataEntry(lendersKey, add(allLendersStr, lender)),
+                DataEntry(enabledLendersKey, add(enabledLendersStr, lender))
+                ])
+        }
+}
+
+@Callable(i)
+func withdrawBtc() = {
+    let lender = i.caller.bytes.toBase58String()
+    let isWithdrawAllowed = match this.getInteger(openLendsOfKey(lender)) {
+        case a:Int => a == 0 # all lends are closed
+        case _ => true       # no lends has been open yet
+    }
+    if(!isWithdrawAllowed)
+     then throw("withdraw not allowed, you have open lends. invoke enableLending(false) and wait for loans to be closed") else  
+        ScriptResult(
+            WriteSet([
+                DataEntry(circulatingAssetsKey(lender), 0),
+                DataEntry(lendersKey, remove(allLendersStr, lender)),
+                DataEntry(enabledLendersKey, remove(enabledLendersStr, lender))
+                ]),
+            TransferSet(
+                [ScriptTransfer(i.caller, this.getIntegerValue(circulatingAssetsKey(lender)), assetToken)]
+            ))
+}
+
+@Callable(i)
+func enableDepositBtc(b: Boolean) = {
+    if(i.caller != owner) then throw("admin permissions required") else
+    if(b == newDepositBtcEnabled) then throw("the value already set") else
+    WriteSet([DataEntry(enableDepositBtcKey, b)])
+} 
+
+@Callable(i)
+func enableNewLoans(b: Boolean) = {
+    if(i.caller != owner) then throw("admin permissions required") else
+    if(b == newLoansEnabled) then throw("the value already set") else
+    WriteSet([DataEntry(enableNewLoansKey, b)])
+}
