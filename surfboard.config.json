@@ -16,7 +16,7 @@
             "timeout": 60000
         }
     },
-    "defaultEnv": "custom",
+    "defaultEnv": "testnet",
     "mocha": {
         "timeout": 60000
     }

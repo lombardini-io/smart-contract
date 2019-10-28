@@ -115,7 +115,7 @@ func incrementOpenLends() = {
 }
 
 func profitDistribution(btc: Int, lenders: List[String]) = {
-    let servicePart = fraction(btc, serviceFeePercentile, 10000)
+    let servicePart = fraction(btc, serviceFeePercentile, 100)
     let distribute = btc - servicePart
     let newServiceProfit = profitFor(ownerStr) + servicePart
     let lendersAmt = lenders.size()
@@ -311,7 +311,7 @@ func buyBack() = {
 func closeExpiredFor(address:String) = {
     let endOfInterest = getInteger(this, endOfInterestOfKey(address)).valueOrErrorMessage("no end of interest")
     let loanExpired =  height > endOfInterest
-    if(!loanExpired) then throw("Owner can only close expired rents. Expiring on height " + endOfInterest.toString() + ", current height" + height.toString()) else
+    if(!loanExpired) then throw("Only expired rents can be closed by non-lender. Expiring on height " + endOfInterest.toString() + ", current height: " + height.toString()) else
     closeExpired(
         address,
         this.getIntegerValue(depositOfKey(address)),
