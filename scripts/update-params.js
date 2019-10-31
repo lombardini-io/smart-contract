@@ -1,8 +1,8 @@
 const path = require('path')
 const lib = require(path.resolve('./test/surfboard/lib.js'))
 
-const dappAddress = "3MwHAghvVSNQUvsYHsHSR4tAEYiVarQRrtG"
-const oracleAddress = "3N6RM5c9TGqC8yqmLMgL1GCMtecMUX9Hxw5"
+const dappAddress = "3P4ub5GDTxMMr9VAoWzvMKofXWLbbpBxqZS"
+const oracleAddress = "3PPTrTo3AzR56N7ArzbU3Bpq9zYMgcf39Mk"
 async function go() {
     const tx = invokeScript({
         dApp: dappAddress,
@@ -12,9 +12,9 @@ async function go() {
                 { type: "string", value: oracleAddress },   // oracle
                 { type: "integer", value: 20000 },          // maxRate
                 { type: "integer", value: 80 },             // discountPercentile, / 100
-                { type: "integer", value: 120 },            // gracePeriod, blocks
-                { type: "integer", value: 240 },            // interestPeriod, blocks
-                { type: "integer", value: 60*24*7 },        // burndownPeriod, blocks
+                { type: "integer", value: 1440 },            // gracePeriod, blocks
+                { type: "integer", value: 43200 },            // interestPeriod, blocks
+                { type: "integer", value: 1440000 },        // burndownPeriod, blocks
                 { type: "integer", value: 10 },             // serviceFeePercentile, / 100
                 { type: "integer", value: 10 }              // lendSize, WBTC
             ]

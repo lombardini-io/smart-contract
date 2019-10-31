@@ -14,9 +14,15 @@
             "CHAIN_ID": "T",
             "SEED": "height inherit slim around enjoy then spring lake pulp key strong negatives",
             "timeout": 60000
+        },
+        "mainnet": {
+            "API_BASE": "https://nodes.wavesnodes.com/",
+            "CHAIN_ID": "W",
+            "SEED": "height inherit slim around enjoy then spring lake pulp key strong negatives",
+            "timeout": 60000
         }
     },
-    "defaultEnv": "testnet",
+    "defaultEnv": "mainnet",
     "mocha": {
         "timeout": 60000
     }

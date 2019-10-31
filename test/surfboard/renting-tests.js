@@ -71,7 +71,7 @@ describe('user test suite', async function () {
                     { type: "integer", value: gracePeriod },
                     { type: "integer", value: interestPeriod },
                     { type: "integer", value: burndownPeriod },
-                    { type: "integer", value: 1000 }, // 10%
+                    { type: "integer", value: 10 }, // 10%
                     { type: "integer", value: 10 } 
                 ]
             },
